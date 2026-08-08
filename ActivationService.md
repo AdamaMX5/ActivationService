@@ -31,7 +31,7 @@ CPA-Abrechnung (Phase 3), Reputation (sofort) und Token-Burn (Phase 4).
 | `waveId` | String | optional — Check-in im Kontext einer Wave |
 | `clientH3` | String | vom Client gemeldete Zelle (nur Plausibilität, kein Beweis) |
 | `plausibility` | String | Enum: `match` (clientH3 ≤ 1 Ring von location.h3Cell), `mismatch`, `unknown` (Client ohne GPS) |
-| `signature` | String | HMAC-SHA256 über `userId|locationId|waveId|createdAt` mit `CHECKIN_SIGNING_KEY` — macht Abrechnungsdaten nachträglich manipulationssicher |
+| `signature` | String | HMAC-SHA256 über `userId|locationId|merchantId|waveId|createdAt` mit `CHECKIN_SIGNING_KEY` — macht Abrechnungsdaten nachträglich manipulationssicher. `merchantId` ist Teil des Preimage, weil es die CPA-Auszahlung bestimmt: ohne es würde ein nachträglich auf einen anderen Händler umgebogener Check-in weiterhin als `valid` verifizieren |
 | `createdAt` | Date | Auto |
 
 **Check-in-QR:** Das Händler-Frontend (WavyBusiness, Tablet an der Theke) pollt
@@ -107,3 +107,58 @@ WAVE_SERVICE_URL / WAVE_SERVICE_API_KEY
 4. Location-Cap: 301. Check-in in einer Stunde → `429` + ExceptionService-Meldung
 5. `verify-signature` erkennt ein nachträglich in der DB verändertes `waveId`-Feld als `valid: false`
 6. `totpSecret` taucht in keiner API-Response und keinem Log auf
+
+---
+
+## Implementierungsdetails
+
+Umgesetzt in Node.js + Express + Mongoose (`src/`), Redis (`ioredis`) für Rate-Limits, siehe
+[README.md](./README.md) für Setup.
+
+- **Fehlerformat:** `{ "error": "<message>" }`; `400` Validierung (u. a. `waveId` ist strikt auf
+  die Mongo-ObjectId-Form (`/^[0-9a-fA-F]{24}$/`) beschränkt, bevor es je in eine interne
+  WaveService-URL oder ein XP-Event eingesetzt wird — verhindert, dass ein Client per Body-Feld
+  Pfad-Traversal/Query-Injection gegen einen internen Aufruf mit ActivationServices eigenem
+  `X-API-Key` erzwingt), `401` fehlender/ungültiger Token oder API-Key, `403` fehlender/ungültiger
+  Bearer-Token bzw. **Merchant greift auf eine fremde Location zu** (nicht mit `404` maskiert —
+  anders als bei WaveService, siehe Merchant-Tabelle), `404` Location/Check-in nicht gefunden
+  (inkl. deaktivierter Locations, die für `POST /checkins` als nicht existent behandelt werden),
+  `429` Rate-Limit (Cooldown/Tages-/Stunden-Cap), `500`-Interna nie im Response-Body, nur an den
+  ExceptionService.
+- **Ownership-Semantik:** Merchant-Routen unter `/locations/:id...` folgen strikt der eigenen
+  Tabelle oben (`404` wenn die Location gar nicht existiert, `403` wenn sie existiert aber
+  `merchantId !== req.user.id`) — bewusst *kein* 404-Masking wie bei WaveService, weil Merchants
+  hier wissen dürfen, dass eine `id` prinzipiell existiert.
+- **`totpSecret` at rest:** AES-256-GCM (`services/secretCipher.js`), 32-Byte-Schlüssel aus
+  `SECRET_ENC_KEY` (Hex, 64 Zeichen), zufälliger 12-Byte-IV pro Verschlüsselung, Auth-Tag wird bei
+  `decrypt` geprüft (manipulierte Ciphertext wirft). Zusätzlich zur `toJSON`-Filterung ist das Feld
+  im Mongoose-Schema `select: false` — ein versehentliches `Location.find()` ohne explizites
+  `.select('+totpSecret')` bekommt das Feld gar nicht erst aus der DB geladen.
+- **TOTP:** `speakeasy`, 8-stellig, `window: 1` (exakt das dokumentierte ±1-Step-Fenster, nicht
+  weiter). `codeStepS` ist bei Erstellung/Änderung auf 15–300s begrenzt (Schema + Validierung),
+  damit ein Merchant das Fenster nicht auf einen Wert setzen kann, der die Sicherheitsannahme
+  verwässert.
+- **Signatur:** HMAC-SHA256 über `userId|locationId|merchantId|waveId|createdAt` (siehe
+  `Checkin`-Tabelle oben) mit `CHECKIN_SIGNING_KEY`, verifiziert per
+  `crypto.timingSafeEqual` — kein naiver String-Vergleich, um Timing-Seitenkanäle bei der
+  Signaturprüfung auszuschließen.
+- **Plausibilität:** `h3-js` `gridDistance(location.h3Cell, clientH3)`; fehlendes `clientH3` →
+  `unknown`, `<= 1` → `match`, sonst (inkl. eines Fehlers bei inkompatibler/ungültiger Zelle) →
+  `mismatch`. Blockiert nie den Check-in.
+- **Rate-Limiter (Redis):** Cooldown per `SET ... NX EX`, Tages-/Stunden-Cap per `INCR` +
+  einmaligem `EXPIRE`. Alle drei werden **vor** der TOTP-Prüfung nicht reserviert (erst danach —
+  ein falscher Code verbraucht kein Kontingent) und bei einem nachgelagerten Fehler (z. B.
+  fehlgeschlagenes `Checkin.create`) vollständig zurückgerollt. Eine Stunden-Cap-Überschreitung
+  meldet zusätzlich ein Fraud-Signal an den ExceptionService.
+- **DSGVO-Pseudonymisierung:** `GET /locations/:id/checkins` liefert statt `userId` ein
+  `userRef = HMAC-SHA256(CHECKIN_SIGNING_KEY, userId)` (gekürzt) — deterministisch für
+  Wiedererkennung, aber ohne den Schlüssel nicht auf die echte `userId` rückführbar.
+  `GET /me/checkins` projiziert umgekehrt `signature` und `merchantId` weg — Abrechnungsdaten
+  gehören nicht in die konsumentenseitige Historie.
+- **Folgeaktionen** (`services/profileEvents.js`, `services/waveStats.js`): 3 Versuche,
+  exponentielles Backoff, nie awaited von der Route — ein Ausfall von ProfileService/WaveService
+  blockiert nie die Check-in-Response.
+- **Tests:** `tests/unit/**` (TOTP-Fenstergrenzen, Signatur-Sign/Verify/Tamper, Plausibilitäts-
+  Logik) und `tests/integration/**` (End-to-End über `supertest` + `mongodb-memory-server` +
+  `ioredis-mock`, deckt alle 6 Akzeptanzkriterien in nummerierten `describe`-Blöcken ab, plus eine
+  eigene Suite für `totpSecret`-Leck-Freiheit über jeden Lesepfad inkl. Konsolen-Ausgaben).

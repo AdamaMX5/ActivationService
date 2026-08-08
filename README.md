@@ -11,7 +11,9 @@ limits. Every verified check-in is stored as a **signed event**, which later fee
 ## Stack
 
 - Node.js + Express
-- MongoDB via Mongoose, Redis for rate-limiting
+- MongoDB via Mongoose, Redis (`ioredis`) for rate-limiting
+- `speakeasy` for TOTP generation/verification, `h3-js` for plausibility checks
+- AES-256-GCM (Node `crypto`) for `totpSecret` at rest, HMAC-SHA256 for signed check-in events
 - JWT (RS256) verification against the AuthService public key
 - `X-API-Key` auth for internal service-to-service calls
 
