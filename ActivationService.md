@@ -31,7 +31,7 @@ CPA-Abrechnung (Phase 3), Reputation (sofort) und Token-Burn (Phase 4).
 | `waveId` | String | optional — Check-in im Kontext einer Wave |
 | `clientH3` | String | vom Client gemeldete Zelle (nur Plausibilität, kein Beweis) |
 | `plausibility` | String | Enum: `match` (clientH3 ≤ 1 Ring von location.h3Cell), `mismatch`, `unknown` (Client ohne GPS) |
-| `signature` | String | HMAC-SHA256 über `userId|locationId|merchantId|waveId|createdAt` mit `CHECKIN_SIGNING_KEY` — macht Abrechnungsdaten nachträglich manipulationssicher. `merchantId` ist Teil des Preimage, weil es die CPA-Auszahlung bestimmt: ohne es würde ein nachträglich auf einen anderen Händler umgebogener Check-in weiterhin als `valid` verifizieren |
+| `signature` | String | HMAC-SHA256 mit `CHECKIN_SIGNING_KEY` über das JSON-Array `[userId, locationId, merchantId, waveId, createdAt]` (leere Zeichenkette für fehlende `waveId`, `createdAt` als ISO-8601) — macht Abrechnungsdaten nachträglich manipulationssicher. `merchantId` ist Teil des Preimage, weil es die CPA-Auszahlung bestimmt: ohne es würde ein nachträglich auf einen anderen Händler umgebogener Check-in weiterhin als `valid` verifizieren. JSON statt Trennzeichen-Verkettung, damit die Kodierung eindeutig bleibt, auch wenn ein Feldwert je das Trennzeichen enthalten sollte |
 | `createdAt` | Date | Auto |
 
 **Check-in-QR:** Das Händler-Frontend (WavyBusiness, Tablet an der Theke) pollt
@@ -138,10 +138,12 @@ Umgesetzt in Node.js + Express + Mongoose (`src/`), Redis (`ioredis`) für Rate-
   weiter). `codeStepS` ist bei Erstellung/Änderung auf 15–300s begrenzt (Schema + Validierung),
   damit ein Merchant das Fenster nicht auf einen Wert setzen kann, der die Sicherheitsannahme
   verwässert.
-- **Signatur:** HMAC-SHA256 über `userId|locationId|merchantId|waveId|createdAt` (siehe
-  `Checkin`-Tabelle oben) mit `CHECKIN_SIGNING_KEY`, verifiziert per
+- **Signatur:** HMAC-SHA256 über das JSON-Array `[userId, locationId, merchantId, waveId,
+  createdAt]` (siehe `Checkin`-Tabelle oben) mit `CHECKIN_SIGNING_KEY`, verifiziert per
   `crypto.timingSafeEqual` — kein naiver String-Vergleich, um Timing-Seitenkanäle bei der
-  Signaturprüfung auszuschließen.
+  Signaturprüfung auszuschließen. Die JSON-Kodierung ist injektiv: zwei unterschiedliche
+  Feldbelegungen können nicht dasselbe Preimage erzeugen, unabhängig davon, welche Zeichen die
+  IDs anderer Services künftig enthalten.
 - **Plausibilität:** `h3-js` `gridDistance(location.h3Cell, clientH3)`; fehlendes `clientH3` →
   `unknown`, `<= 1` → `match`, sonst (inkl. eines Fehlers bei inkompatibler/ungültiger Zelle) →
   `mismatch`. Blockiert nie den Check-in.

@@ -7,14 +7,20 @@ function hmac(input) {
 
 // merchantId is part of the preimage because it, not locationId, decides who gets paid for a
 // check-in: without it, repointing a stored check-in at another merchant would still verify.
+//
+// JSON-encoded rather than joined on a separator: a plain `join('|')` is ambiguous the moment
+// any field could contain the separator itself, because {userId:'a|b', locationId:'c'} and
+// {userId:'a', locationId:'b|c'} then collapse to the same preimage and share a signature.
+// JSON escapes quotes and backslashes, so distinct field values always yield distinct strings —
+// the guarantee no longer rests on an assumption about ID formats owned by other services.
 function payload({ userId, locationId, merchantId, waveId, createdAt }) {
-  return [
+  return JSON.stringify([
     userId,
     locationId,
     merchantId,
     waveId || '',
     new Date(createdAt).toISOString(),
-  ].join('|');
+  ]);
 }
 
 function sign(checkin) {

@@ -64,6 +64,24 @@ test('two check-ins differing only by merchantId get different signatures', () =
   expect(sign(base)).not.toBe(sign({ ...base, merchantId: 'merchant-2' }));
 });
 
+test('field values containing the old separator cannot collide into one signature', () => {
+  // The preimage used to be join('|'), which made these two distinct check-ins share a
+  // signature. Today's IDs can't contain a '|', so this was never exploitable — the encoding
+  // is unambiguous by construction now rather than by assumption about other services' formats.
+  const shifted = [
+    [{ userId: 'a|b', locationId: 'c' }, { userId: 'a', locationId: 'b|c' }],
+    [{ merchantId: 'm|1', waveId: 'w' }, { merchantId: 'm', waveId: '1|w' }],
+  ];
+
+  for (const [left, right] of shifted) {
+    expect(sign({ ...base, ...left })).not.toBe(sign({ ...base, ...right }));
+  }
+});
+
+test('a quote or backslash in a field is escaped rather than shifting the encoding', () => {
+  expect(sign({ ...base, userId: 'a"b' })).not.toBe(sign({ ...base, userId: 'a\\"b' }));
+});
+
 test('pseudonymize is stable, collision-distinct and never echoes the raw userId', () => {
   const ref = pseudonymize('user-1');
   expect(ref).toBe(pseudonymize('user-1'));
