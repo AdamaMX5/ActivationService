@@ -7,7 +7,7 @@ TOTP-QR-Codes — Grundlage des Cost-per-Activation-Geschäftsmodells.
 
 ## Architecture
 See @./ActivationService.md für die eigene API Dokumentation (Datenmodelle, TOTP-Mechanik, Rate-Limits).
-See @../../.claude/MSArchitecture/AuthService.md für AuthService details (JWT verification, GITCLIENT role).
-See @../../.claude/MSArchitecture/ProfileService.md für ProfileService details (XP-Events bei verifiziertem Check-in).
+See @../AuthService/AuthService.md für AuthService details (JWT verification, GITCLIENT role).
+See @../ProfilService/ProfileService.md für ProfileService details (XP-Events bei verifiziertem Check-in).
 See @../WaveService/WaveService.md für WaveService details (Stats-Update `checkins` bei Check-in im Wave-Kontext).
-See @../../.claude/MSArchitecture/ExceptionService.md für ExceptionService details (Sende Fehlerfälle und Fraud-Signale).
+See @../ExceptionService/ExceptionService.md für ExceptionService details (Sende Fehlerfälle und Fraud-Signale).
